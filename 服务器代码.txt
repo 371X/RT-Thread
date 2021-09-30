@@ -1,0 +1,140 @@
+#include<stdio.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<string.h>
+#include<unistd.h>
+#include <arpa/inet.h>
+#include<pthread.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+
+static void usage(const char *proc)
+{
+    printf("Please use :%s [IP] [port]\n",proc);
+}
+char buf_t[32] = {'\0'};
+char buf_1[32] = {'\0'};
+void * thread_run(void *arg)
+{ 
+    printf("get connected creat a new thread\n");
+    int fd = *(int *)arg;
+    int i = 0;	
+    while(1){              
+    	    memset(buf_t,'\0',sizeof(buf_t));
+	    memset(buf_1,'\0',sizeof(buf_1));
+	    ssize_t _s = read(fd,buf_t,sizeof(buf_t));
+	    printf("read = %d \n",_s); 
+    	    int i = 0;				
+    	    if(_s >= 0){
+   	        buf_t[_s] = '\0';
+		printf("client say : %s, %d\n",buf_t,_s);
+		if( strstr(buf_t,"input") != NULL ){
+			while(1){
+				memset(buf_t,'\0',32);
+				_s = read(fd, buf_t, 30);
+			//	_s = recv(fd, buf_t, 32, 0);
+				if( _s > 1){
+						printf("%d \n",_s);
+						for( i = 0; i < 32; i++) printf(" input : buf_t %d = %c \n",i,buf_t[i] );
+						strcpy(buf_1,buf_t);			
+					  	for( i = 0; i < 32; i++) printf("input : buf_t%d = %c \n",i,buf_t[i]); 
+					  }
+				}
+				memset(buf_t,'\0',32);
+				usleep(1000*100);
+				
+	         }else{ 
+			for( i = 0; i < 10; i++){
+				buf_t[i] = buf_t[i+1];
+			}
+			if( strstr(buf_t,"output") != NULL){  
+				char buf_2[64] = {0};
+				printf("into output \n");
+				while(1){
+					if( *(buf_1+2) != '\0' && *(buf_1) != '\0' && *(buf_1 + 1) != '\0'  ) {
+						sprintf(buf_2,"%s!",buf_1);
+						printf("buf_1 = %s \t buf_2 = %s\n",buf_1,buf_2);
+						write(fd,buf_2,strlen(buf_2) );
+						memset(buf_2,'\0',32 );
+						memset(buf_1,'\0',32 );
+					}		
+					usleep(1000*100);
+				}
+			}		
+		}
+	usleep(1000);	
+    	}
+    }
+
+}
+
+int main(int argc,char *argv[])
+{
+    if(argc != 3){
+        usage(argv[0]);
+        exit(1);
+    }
+
+    //1.creat socket
+    int sock = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if(sock < 0){
+        perror("creat socket error\n");
+        return 1;
+    }
+
+    struct sockaddr_in local;
+    local.sin_family = AF_INET;
+    local.sin_port = htons(atoi(argv[2]));
+    local.sin_addr.s_addr = inet_addr(argv[1]);
+
+    int opt = 1;
+    int len_1 = sizeof(opt);
+    setsockopt(sock, SOL_SOCKET,SO_REUSEADDR,&opt,len_1);
+
+    //2.bind
+
+    if(bind(sock,(struct sockaddr*)&local,sizeof(local)) < 0){
+        perror("bind error\n");
+        close(sock);
+        return 2;
+    }
+   
+    //3.listen
+
+    if(listen(sock,10) < 0){
+        perror("listen error\n");
+        close(sock);
+        return 3;
+    }
+
+    printf("bind and listen success!wait accept...\n");
+    
+    //4.accept
+
+    struct sockaddr_in peer;
+    socklen_t len = sizeof(peer);
+    while(1){
+
+        int fd = accept(sock,(struct sockaddr*)&peer ,&len);
+        if(fd < 0){
+            perror("accept error\n");
+            close(sock);
+            return 4;
+        }
+	
+	
+        
+        printf("get connect,ip is : %s port is : %d\n",inet_ntoa(peer.sin_addr),ntohs(peer.sin_port));
+
+        pthread_t id;
+        pthread_create(&id,NULL,thread_run,&fd);
+
+
+        pthread_detach(id);
+
+    }
+    close(sock);
+    return 0;
+}

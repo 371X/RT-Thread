@@ -1,0 +1,473 @@
+#include <Wire.h>
+#include <JY901.h>
+
+//**********  wifi init **************//
+//************************************//
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <Ticker.h>
+// Hardcode WiFi parameters as this isn't going to be moving around.
+const char* ssid = "DESKTOP"; //填入自己的WiFi名
+const char* password = "123456789"; //WiFi密码
+
+//// Start a TCP Server on port 5045
+//WiFiServer server(9000); //端口5045，自定义（避免公用端口）
+WiFiClient client;
+Ticker ticker;
+
+
+//*********** MPU6050 init **************//
+//***************************************//
+#define LED_PIN 2 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
+
+//*********** AD init **************//
+//**********************************//
+const int FLEX_PIN = A0; // 电压采集接口
+// Measure the voltage at 5V and the actual resistance of your// 100k resistor, and enter them below:
+const float VCC =3.3; // 模块供电电压，ADC参考电压为V
+const float R_DIV =100000.0; // 分压电阻为100KΩ
+// Upload the code, then try to adjust these values to more// accurately calculate bend degree.
+const float STRAIGHT_RESISTANCE =17300.0; // 平直时的电阻值
+const float BEND_RESISTANCE =60000.0; // 90度弯曲时的电阻值
+
+int flexADC = 0;        //  读取示数        
+float flexV = 0;        //  示数转化为电压
+float flexR = 0;        //  此时电阻
+float angle = 0;        //  弯曲角度
+
+//==================================//
+//************* 状态位 **************//
+//==================================//
+int i = 0 ;
+//#define Car 0
+//#define RobArm 1
+unsigned long time_1 = 0;
+unsigned long time_2 = 0;         // 中断触发位,依靠时间间隔触发中断
+unsigned long time_3 = 0;         // 
+unsigned long time_18 = 0;
+int guiling = 0;
+
+String str = ""; 
+int mlc_left = 1;
+int mlc_go = 1;
+int mlc_spin = 1;
+int mlc_left_real = 1;
+int mlc_go_real = 1;
+int mlc_spin_real = 1;
+
+String str_real = "";
+
+int state_0 = 0;
+
+float ypr_do_it[3];
+//float ypr_old[3];
+float ypr_new[3];
+int count = 0;                // 数据处理计数位
+int State = 0;              //  state = 0:Car  state = 1:RobArm 
+
+int Stop = 1;               // Stop = 0 或者 1
+#define DO_pin_0 14         // 大拇指
+#define DO_pin_1 12            // AO DO 变量集
+#define LED      16         // 灯光闪烁 
+int val_DO_0 = 0;
+int val_DO_1 = 1;
+
+typedef struct Car{
+    int left_right;
+    int go_back;
+    int spinS_N;
+    int velocity;
+    int D0;
+    int D1;
+    int D2;
+    int D3;
+};
+Car mlc = {1,1,1,90,1,1,1,90};
+
+void Wifi_init(){
+     Serial.println("wifi init");
+     WiFi.begin(ssid, password);
+     Serial.println("");
+     while (WiFi.status() != WL_CONNECTED) { //检查WiFi连接状态
+        delay(500);
+        Serial.print(".");
+     }
+     Serial.print("Connected to "); Serial.println(ssid);
+     Serial.print("IP Address: "); Serial.println(WiFi.localIP()); //串口监视器显示IP地址
+     while (0 == client.connect("81.70.241.204", 9000)) {
+            delay(500);
+            Serial.print("connect is fail .");
+     }
+     client.println("input");
+     Serial.println("connected is success");
+}
+
+// ================================================================
+// ===               INTERRUPT DETECTION ROUTINE                ===
+// ================================================================
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+ICACHE_RAM_ATTR void dmpDataReady() {
+    mpuInterrupt = true;
+}
+//
+//void Init_MPUdmp(){
+//    Serial.println("MPUdmp init");
+//   
+//     devStatus = mpu.dmpInitialize();
+//     // supply your own gyro offsets here, scaled for min sensitivity
+//        mpu.setXGyroOffset(220);
+//        mpu.setYGyroOffset(76);
+//        mpu.setZGyroOffset(-85);
+//        mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+//    
+//    if (devStatus == 0) {
+//        // Calibration Time: generate offsets and calibrate our MPU6050
+//            mpu.CalibrateAccel(6);
+//            mpu.CalibrateGyro(6);    Serial.println("皮卡丘在哭泣");
+//            //mpu.PrintActiveOffsets();
+//            mpu.setDMPEnabled(true);
+//        // turn on the DMP, now that it's ready
+//        Serial.println(F("Enabling DMP..."));
+//            mpu.PrintActiveOffsets();
+//        // enable Arduino interrupt detection
+//        Serial.print(F("Enabling interrupt detection (Arduino external interrupt "));
+//        Serial.print(digitalPinToInterrupt(INTERRUPT_PIN));
+//        Serial.println(F(")..."));
+//        attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+//        mpuIntStatus = mpu.getIntStatus();
+//
+//        // set our DMP Ready flag so the main loop() function knows it's okay to use it
+//        Serial.println(F("DMP ready! Waiting for first interrupt..."));
+//        
+//        dmpReady = true;
+//        
+//        // get expected DMP packet size for later comparison
+//            packetSize = mpu.dmpGetFIFOPacketSize();
+//        for( i = 0; i < 3; i++) ypr_do_it[i] = 0;
+//    }else {
+//        // ERROR!
+//        // 1 = initial memory load failed
+//        // 2 = DMP configuration updates failed
+//        // (if it's going to break, usually the code will be 1)
+//        Serial.print(F("DMP Initialization failed (code "));
+//        Serial.print(devStatus);
+//        Serial.println(F(")"));
+//    }
+//}
+        
+//void get_ypr(){
+////    if (!dmpReady) return;
+////    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet 
+////            #ifdef OUTPUT_READABLE_YAWPITCHROLL
+////            // display Euler angles in degrees
+////                mpu.dmpGetQuaternion(&q, fifoBuffer);
+////                mpu.dmpGetGravity(&gravity, &q);
+////                mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+//                Serial.print("ypr\t");      
+//                ypr_new[0] = ypr[0] * 180/M_PI;
+////                Serial.print(ypr[0] * 180/M_PI);    Serial.print(" \t");
+//                ypr_new[1] = ypr[1] * 180/M_PI; 
+////                Serial.print(ypr[1] * 180/M_PI);    Serial.print(" \t");
+//                ypr_new[2] = ypr[2] * 180/M_PI;
+////               Serial.println(ypr[2] * 180/M_PI);
+//            #endif            
+//    }
+//}
+
+void PinMode_Init(){
+     Serial.println("pinMode init");
+     pinMode(FLEX_PIN, INPUT);
+     pinMode(DO_pin_0,INPUT);
+     pinMode(DO_pin_1,INPUT);
+     pinMode(LED, OUTPUT);
+     pinMode(LED_BUILTIN, OUTPUT);
+}
+        
+//void MPU6050_init(){
+//    Serial.println("MPU6050 init");
+//    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+//        Wire.begin();
+//        Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
+//    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+//        Fastwire::setup(400, true);
+//    #endif
+//        
+//    // initialize device
+//    Serial.println(F("Initializing I2C devices..."));
+//    mpu.initialize();
+////    pinMode(INTERRUPT_PIN, INPUT);
+//    
+//     // verify connection
+//    Serial.println(F("Testing device connections..."));
+//    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+//
+//    // load and configure the DMP
+//    Serial.println(F("Initializing DMP..."));
+//    Init_MPUdmp();
+//}
+// ================================================================
+// ===                      INITIAL SETUP                       ===
+// ================================================================
+
+void setup() {
+    Serial.begin(9600);
+    while (!Serial); // wait for Leonardo enumeration, others continue immediately
+    // join I2C bus (I2Cdev library doesn't do this automatically)
+    Wifi_init();
+    PinMode_Init();
+//    MPU6050_init();
+    get_ypr();
+    for( i = 0; i < 3; i++) ypr_do_it[i] = ypr_new[i]; 
+}
+
+// ================================================================
+// ===                    MAIN PROGRAM LOOP                     ===
+// ================================================================
+
+void get_AD_DO(){
+   
+//    Serial.print("DO_0 = ");  Serial.println(val_DO_0); 
+//    Serial.print("DO_1 = ");  Serial.println(val_DO_1);
+    flexADC=analogRead(FLEX_PIN);
+    flexV=flexADC* VCC / 1024.0;
+    flexR= R_DIV * (VCC / flexV-1.0);
+//    Serial.println("Voltage: "+String(flexV) +" V");
+//    Serial.println("Resistance: "+String(flexR) +" ohms");
+// Use the calculated resistance to estimate the sensor's// bend angle:
+    angle = map(flexR, STRAIGHT_RESISTANCE, BEND_RESISTANCE,0, 90.0);
+    Serial.println("Bend: "+String(angle) +" degrees");
+    Serial.println();
+}
+
+void client_print(String str){
+    client.print(str);
+}
+
+int MPU_XYZ(){
+    if( Stop != 1 ){ 
+        if(ypr_do_it[2] >= 140 && ypr_new[2] < -140){
+                ypr_new[2] = 0 - ypr_new[2] + 180 - ypr_do_it[2];                        
+        }
+        if(ypr_new[2] >= 140 && ypr_do_it[2] <= -140){
+                ypr_new[2] = 0 - ypr_do_it[2] + 180 - ypr_new[2];    
+        }
+        if( ypr_new[0] - ypr_do_it[0] > 40)         return 3;      // left
+        else if( ypr_new[0] - ypr_do_it[0] < -40)   return 2;      // right      
+        else if( ypr_new[1] - ypr_do_it[1] > 35 )   return 5;      // go
+        else if( ypr_new[1] - ypr_do_it[1] < -35)   return 4;      // goback
+        else if( ypr_new[2] - ypr_do_it[2] > 30 )   return 0;      // spin S
+        else if( ypr_new[2] - ypr_do_it[2] < -30)   return 1;      // spin N
+        else return -1;
+    }else{
+        return -1;
+    }
+}
+
+void static_state(){
+    static int i = 0;
+    int key = 0;
+    val_DO_0 = digitalRead(DO_pin_0);
+    val_DO_1 = digitalRead(DO_pin_1);
+    if( val_DO_0 == 1 && angle <= 50 && val_DO_1 == 0){                    // 控制状态 按键按下
+        key = 1;
+    }else{
+        key = 0; 
+    }
+    
+    switch(i){
+        case 0:     i++;    
+            break;
+        case 1:     i++;
+                    if(key == 1)      if( ++State >= 2)  State = 0;
+            break;                     
+        case 2:     if(key == 0)      i = 0;
+            break;  
+    }
+}
+
+void if_do(){
+     if( val_DO_1 == 0 && angle >= 50 && val_DO_0 == 0){                   // 停止 控制 判断
+        Stop = 1;     
+    }else{
+        Stop = 0;    
+    }
+   
+
+
+    int date = MPU_XYZ();
+    if(Stop == 1){
+        for( i =0; i < 3 ; i++)  ypr_do_it[i] = ypr_new[i];
+        mlc.left_right = mlc.go_back = mlc.spinS_N = 1;
+        mlc_go_real = mlc_spin_real = mlc_left_real = 1;
+        mlc.velocity = 80;       
+        mlc.D0 = mlc.D1 = mlc.D2 = 1;
+        mlc_left = mlc_go = mlc_spin = 1;
+    //    mlc_left_real = mlc_go_real = mlc_spin_real = 1;
+         digitalWrite(LED,HIGH); 
+    }
+    if( Stop == 0 ){
+        digitalWrite(LED,LOW);
+        mlc.left_right = mlc.go_back = mlc.spinS_N = 1;
+        mlc.velocity = 80;   
+        mlc.D0 = mlc.D1 = mlc.D2 = 1;   
+        if( State == 0){                // 小车模式
+            digitalWrite(LED_BUILTIN,HIGH);
+            mlc.velocity = angle;
+            if( val_DO_0 == 0 && val_DO_1 == 1 ){     // 如果大拇指弯曲，其余张开 并且是在 小车模式  向前 45
+                if( date == -1)   return;
+                else if( date == 0 || date == 2){            
+                    if( ++mlc.left_right >= 3 )     mlc.left_right = 2;
+                    if( mlc.left_right == 1)        mlc.go_back = 1;
+                    else                            mlc.go_back = 2;
+                }else if( date == 1 || date == 3){                                 
+                    if( --mlc.left_right <= -1)     mlc.left_right = 0;      
+                    if( mlc.left_right == 1)        mlc.go_back = 1;
+                    else                            mlc.go_back = 2;
+                }else{   
+                        return;           
+                }        
+            }
+            if( val_DO_0 == 1 && val_DO_1 == 0 && angle >= 55 ){     // 如果大拇指张开，其余弯曲 并且是在 小车模式  向后 45
+                    if( date == -1)   return;
+                    else if( date == 0 || date == 4){            
+                        if( ++mlc.left_right >= 3 )     mlc.left_right = 2;
+                        if( mlc.left_right == 1)        mlc.go_back = 1;
+                        else                            mlc.go_back = 0;
+                    }else if( date == 1 || date == 5){               
+                        if( --mlc.left_right <= -1)     mlc.left_right = 0;      
+                        if( mlc.left_right == 1)        mlc.go_back = 1;
+                        else                            mlc.go_back = 0;
+                    }else{   
+                        return;           
+                    }
+            }
+            if( val_DO_0 == 1 && val_DO_1 == 1 ){     // 如果全部张开
+                    if( date == -1)     return;
+                    else if( date == 0){            
+                            if( ++mlc.left_right >= 3 ) mlc.left_right = 2;
+                    }else if( date == 1){               
+                            if( --mlc.left_right <= -1) mlc.left_right = 0;
+                    }else if( date == 2){               
+                            if( ++mlc.go_back >= 3 )    mlc.go_back = 2;
+                    }else if( date == 3){               
+                            if( --mlc.go_back <= -1)    mlc.go_back = 0;
+                    }else if( date == 4){           
+                            if( ++mlc.spinS_N >= 3 )    mlc.spinS_N = 2;
+                    }else if( date == 5){           
+                            if( --mlc.spinS_N <= -1)    mlc.spinS_N = 0;    
+                    }
+                    if(guiling == 1){
+                        for( i = 0; i < 3; i++)     ypr_do_it[i] = ypr_new[i];                            
+                    }
+            }
+        }
+        else if( State == 1 ){                  // 如果是 机械臂模式
+            digitalWrite(LED_BUILTIN,LOW);
+           
+            if( val_DO_0 == 0 && angle <= 55 && val_DO_1 == 1){     // 如果大拇指弯曲0，其余张开1 并且是在 机械臂模式
+                if( date == -1)   return;
+                else if( date == 0){            
+                    if( ++mlc.D0 >= 3 )     mlc.D0 = 2;
+                }else if( date == 1){               
+                    if( --mlc.D0 <= -1)     mlc.D0 = 0;
+                }else if( date == 2){               
+                    if( ++mlc.D1 >= 3 )     mlc.D1 = 2;
+                }else if( date == 3){               
+                    if( --mlc.D1 <= -1)     mlc.D1 = 0;
+                }else{   
+                    return;           
+                }
+            }
+            if( val_DO_0 == 1 && val_DO_1 == 0 && angle >= 55){     // 如果大拇指张开1，其余弯曲1 并且是在 机械臂模式
+                if( date == -1)   return;
+                else if( date == 2){               
+                    if( ++mlc.D2 >= 3 )     mlc.D2 = 2;
+                }else if( date == 3){               
+                    if( --mlc.D2 <= -1)     mlc.D2 = 0;
+                }else{   
+                    return;           
+                }
+            }       
+            if( val_DO_0 == 1 && val_DO_1 == 1 ){     // 爪子模式 
+                mlc.D3 = angle;
+                if(mlc.D3 >= 99)    mlc.D3 = 80;
+            }
+        }
+    }
+}
+
+void get_ypr(){
+    //
+    ypr_new[0] = (float)JY901.stcAngle.Angle[0]/32768*180;
+    ypr_new[1] = (float)JY901.stcAngle.Angle[1]/32768*180;
+    ypr_new[2] = (float)JY901.stcAngle.Angle[2]/32768*180;
+}
+
+void str_xiao_dou(){
+    static int str_state = 0;
+    if( State == 0 ){
+    switch( str_state ){
+            case 0:    if( mlc_left_real != mlc.left_right || mlc_go_real != mlc.go_back || mlc_spin_real != mlc.spinS_N ){
+                            str_state = 1;
+                            mlc_left = mlc.left_right;   mlc_go = mlc.go_back;    mlc_spin = mlc.spinS_N;         
+                        }
+                 break;                         
+            case 1:    if( mlc_left == mlc.left_right && mlc_go == mlc.go_back && mlc_spin == mlc.spinS_N ){
+                            str_state = 2;
+                            mlc_left = mlc.left_right;   mlc_go = mlc.go_back;    mlc_spin = mlc.spinS_N;     
+                        }
+                 break;
+            case 2:     if( mlc_left == mlc.left_right && mlc_go == mlc.go_back && mlc_spin == mlc.spinS_N ){
+                            str_state = 0;
+                            mlc_left_real = mlc_left;   mlc_go_real = mlc_go;    mlc_spin_real = mlc_spin;
+                        }
+                 break;
+    }
+    }else{
+        state_0 = 1;
+    }
+}
+
+void loop() {
+    delay(19);
+    time_1 = millis();
+    //Serial.println(time_interval);
+    if(time_1 - time_18 >= 10){
+        time_18 = time_1;
+        static_state();         // 状态机控制按键
+    }
+    if(time_1 - time_2 >= 20){
+        time_2 = time_1;
+        get_ypr();
+        get_AD_DO();
+        if_do(); 
+        if(State == 1){
+            mlc_go_real = mlc_spin_real = mlc_left_real = 1;
+        }
+//        init_state();
+     //   Serial.print("mlc : ");  Serial.print(mlc.left_right); Serial.print(","); Serial.print(mlc.go_back); Serial.print(","); Serial.println(mlc.spinS_N);   
+        if( mlc.velocity >= 80)  mlc.velocity = 80;
+        if( mlc.velocity <= 1)   mlc.velocity = 1;
+        
+        str = "#"+String(mlc_left_real) +","+ String(mlc_go_real) +","+ String(mlc_spin_real) +","+ String(mlc.velocity) +"," + String(mlc.D0) +","+ String(mlc.D1) +","+ String(mlc.D2) +","+ String(mlc.D3); 
+        str_xiao_dou();
+        
+    }
+    
+    if(time_1 - time_3 >= 100){
+        time_3 = time_1;
+        
+        str_real = str;
+        client_print(str_real);
+        Serial.println(str_real);
+    }
+    
+}
+
+void serialEvent() 
+{
+  while (Serial.available()) 
+  {
+    JY901.CopeSerialData(Serial.read()); //Call JY901 data cope function
+  }
+}
